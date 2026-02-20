@@ -92,6 +92,8 @@ class Signal(QObject):
                 self.__load_compressed_complex(filename)
             elif filename.endswith(".blu") or filename.endswith(".blue"):
                 self.__load_xmidas_file(filename)
+            elif filename.endswith(".mat"):
+                self.__load_matlab_file(filename)
             else:
                 self.__load_complex_file(filename)
 
@@ -306,6 +308,52 @@ class Signal(QObject):
 
         if xdelta > 0:
             self.sample_rate = 1.0 / xdelta
+
+    def __load_matlab_file(self, filename: str):
+        """Load a MATLAB .mat file containing signal data.
+
+        The loader uses ``scipy.io.loadmat`` and picks the first numeric
+        array variable found in the file.  Complex arrays are treated as
+        IQ data; real arrays are treated as already-demodulated signals.
+        """
+        try:
+            from scipy.io import loadmat
+        except ImportError:
+            raise ImportError(
+                "scipy is required to load MATLAB .mat files. "
+                "Install it with: pip install scipy"
+            )
+
+        mat = loadmat(filename, squeeze_me=True)
+
+        # Find the first numeric array – skip MATLAB metadata keys
+        data = None
+        for key, value in mat.items():
+            if key.startswith("__"):
+                continue
+            if isinstance(value, np.ndarray) and np.issubdtype(
+                value.dtype, np.number
+            ):
+                data = value.flatten()
+                break
+
+        if data is None:
+            raise ValueError(
+                "No numeric array variable found in MATLAB file"
+            )
+
+        if np.iscomplexobj(data):
+            # Complex → interleaved I/Q as float32
+            iq = np.empty(2 * len(data), dtype=np.float32)
+            iq[0::2] = data.real.astype(np.float32)
+            iq[1::2] = data.imag.astype(np.float32)
+            self.iq_array = IQArray(iq)
+        else:
+            # Real-only → treated as already demodulated
+            real = data.astype(np.float32)
+            self.iq_array = IQArray(None, np.float32, n=len(real))
+            self.iq_array.real = real
+            self.__already_demodulated = True
 
     @property
     def already_demodulated(self) -> bool:
