@@ -20,8 +20,11 @@ IQ capture to documented protocol specification can be scripted without the GUI.
    - [Example 3 – In-Memory IQ Samples](#example-3--in-memory-iq-samples)
    - [Example 4 – MATLAB .mat File](#example-4--matlab-mat-file)
    - [Example 5 – X-Midas BLUE File](#example-5--x-midas-blue-file)
-   - [Example 6 – Multi-Message Protocol with Field Inference](#example-6--multi-message-protocol-with-field-inference)
-   - [Example 7 – Building a Protocol Specification Document](#example-7--building-a-protocol-specification-document)
+   - [Example 6 – X-Midas FSK to Protocol Specification](#example-6--x-midas-fsk-to-protocol-specification)
+   - [Example 7 – X-Midas ASK/OOK to Protocol Specification](#example-7--x-midas-askook-to-protocol-specification)
+   - [Example 8 – X-Midas PSK to Protocol Specification](#example-8--x-midas-psk-to-protocol-specification)
+   - [Example 9 – Multi-Message Protocol with Field Inference](#example-9--multi-message-protocol-with-field-inference)
+   - [Example 10 – Building a Protocol Specification Document](#example-10--building-a-protocol-specification-document)
 6. [Pipeline Architecture](#pipeline-architecture)
 7. [Result Dictionary Reference](#result-dictionary-reference)
 8. [Troubleshooting](#troubleshooting)
@@ -282,7 +285,307 @@ Scalar (real-only) formats are treated as already-demodulated signals.
 
 ---
 
-### Example 6 – Multi-Message Protocol with Field Inference
+### Example 6 – X-Midas FSK to Protocol Specification
+
+This example demonstrates the complete workflow from an X-Midas BLUE file
+containing an FSK-modulated signal to a full protocol specification.  This is
+common in SIGINT environments where captures are stored in BLUE format by
+tools like X-Midas, NeXtMidas, or REDHAWK.
+
+```python
+import json
+from urh.ainterpretation.AgenticAnalysis import analyze_signal
+
+# ── Step 1: Analyze the X-Midas BLUE file ────────────────────────
+# The file contains complex float (CF) IQ data with FSK modulation.
+# The sample rate is embedded in the BLUE header as 1/xdelta.
+result = analyze_signal("sigint_fsk_capture.blu")
+
+# ── Step 2: Verify detected modulation ───────────────────────────
+params = result["signal_parameters"]
+assert params is not None, "No signal detected — check the file"
+
+print("=== Physical Layer (auto-detected) ===")
+print(f"  Modulation      : {params['modulation_type']}")   # FSK
+print(f"  Samples/symbol  : {params['bit_length']}")
+print(f"  Center threshold: {params['center']:.6f}")
+print(f"  Noise floor     : {params['noise']:.6f}")
+print(f"  Timing tolerance: {params['tolerance']}")
+
+# ── Step 3: Inspect demodulated messages ─────────────────────────
+print(f"\n=== Messages ({result['num_messages']}) ===")
+for i, msg in enumerate(result["messages"]):
+    print(f"\n  Message {i+1}:")
+    print(f"    Hex   : {msg['hex']}")
+    print(f"    Bits  : {msg['bits'][:80]}{'…' if len(msg['bits']) > 80 else ''}")
+    print(f"    Length: {len(msg['bits'])} bits")
+    print(f"    Pause : {msg['pause']} samples")
+
+# ── Step 4: Protocol field inference ─────────────────────────────
+if result["protocol_fields"]:
+    print("\n=== Inferred Protocol Fields ===")
+    print(f"  {'Field':<20s}  {'Bits':<14s}  {'Width':>5s}  Type")
+    print(f"  {'─'*20}  {'─'*14}  {'─'*5}  {'─'*15}")
+    for f in result["protocol_fields"]:
+        w = f["end"] - f["start"]
+        print(f"  {f['name']:<20s}  [{f['start']:3d}:{f['end']:3d}]       "
+              f"{w:>5d}  {f['message_type']}")
+else:
+    print("\n  (Need ≥2 messages for field inference)")
+
+# ── Step 5: Export as machine-readable JSON ──────────────────────
+with open("fsk_protocol_spec.json", "w") as fp:
+    json.dump(result, fp, indent=2, default=str)
+print("\nSaved protocol spec → fsk_protocol_spec.json")
+```
+
+**Expected output** (FSK example with two messages):
+
+```
+=== Physical Layer (auto-detected) ===
+  Modulation      : FSK
+  Samples/symbol  : 100
+  Center threshold: -0.005800
+  Noise floor     : 0.009861
+  Timing tolerance: 5
+
+=== Messages (2) ===
+
+  Message 1:
+    Hex   : aaaaaaaaabcd1234ef56...
+    Bits  : 10101010101010101010101010101010...
+    Length: 176 bits
+    Pause : 12000 samples
+
+  Message 2:
+    Hex   : aaaaaaaaabcd1235ef57...
+    Bits  : 10101010101010101010101010101010...
+    Length: 176 bits
+    Pause : 0 samples
+
+=== Inferred Protocol Fields ===
+  Field                 Bits            Width  Type
+  ────────────────────  ──────────────  ─────  ───────────────
+  preamble              [  0: 32]          32  Default
+  sync                  [ 32: 64]          32  Default
+  length                [ 64: 72]           8  Default
+  address               [ 72:104]          32  Default
+  sequence number       [104:112]           8  Default
+  data                  [112:160]          48  Default
+  checksum              [160:176]          16  Default
+
+Saved protocol spec → fsk_protocol_spec.json
+```
+
+From this output you can directly implement a detector/decoder:
+
+- **Preamble** = 32 alternating bits (`0xAAAAAAAA`), used for clock recovery
+- **Sync word** = 32-bit fixed pattern, marks the start of the frame
+- **Length** = 8-bit field indicating payload size
+- **Address** = 32-bit device identifier
+- **Sequence number** = 8-bit counter for deduplication
+- **Data** = variable-length payload
+- **Checksum** = 16-bit integrity check (CRC or sum)
+
+---
+
+### Example 7 – X-Midas ASK/OOK to Protocol Specification
+
+Many remote controls, garage door openers, and TPMS sensors use ASK
+(amplitude-shift keying) or OOK (on-off keying).  This example shows
+the complete flow from an X-Midas capture of such a signal to protocol
+documentation.
+
+```python
+from urh.ainterpretation.AgenticAnalysis import analyze_signal
+
+# ── Analyze an ASK/OOK signal stored as X-Midas BLUE ────────────
+# The BLUE header specifies CF (complex float) format.
+# The signal uses simple on-off keying for a remote control protocol.
+result = analyze_signal("remote_control_ask.blue")
+
+params = result["signal_parameters"]
+print("=== ASK/OOK Signal Analysis ===")
+print(f"  Modulation  : {params['modulation_type']}")   # ASK
+print(f"  Bit length  : {params['bit_length']} samples")
+print(f"  Center      : {params['center']:.4f}")
+print(f"  Noise floor : {params['noise']:.6f}")
+
+# ── Decoded messages ─────────────────────────────────────────────
+print(f"\n=== {result['num_messages']} Message(s) ===")
+for i, msg in enumerate(result["messages"]):
+    # OOK remotes often repeat the same code many times
+    print(f"  [{i+1}] {msg['hex']}  ({len(msg['bits'])} bits, "
+          f"pause={msg['pause']})")
+
+# ── Detect repeated codes (common for remotes) ──────────────────
+unique_codes = set(msg["hex"] for msg in result["messages"])
+print(f"\n=== Unique codes: {len(unique_codes)} ===")
+for code in sorted(unique_codes):
+    count = sum(1 for m in result["messages"] if m["hex"] == code)
+    print(f"  {code}  (transmitted {count}x)")
+
+# ── Protocol field map ───────────────────────────────────────────
+if result["protocol_fields"]:
+    print("\n=== Protocol Structure ===")
+    for f in result["protocol_fields"]:
+        w = f["end"] - f["start"]
+        byte_w = (w + 7) // 8
+        print(f"  {f['name']:<16s}  bits[{f['start']:3d}:{f['end']:3d}]  "
+              f"{w:2d} bits ({byte_w} byte{'s' if byte_w != 1 else ''})")
+
+# ── Generate a detector specification ────────────────────────────
+print("\n=== Detector Implementation Notes ===")
+print(f"  1. Demodulate as {params['modulation_type']} with threshold "
+      f"{params['center']:.4f}")
+print(f"  2. Symbol rate: 1 symbol = {params['bit_length']} samples")
+if unique_codes:
+    print(f"  3. Match against {len(unique_codes)} known code(s):")
+    for code in sorted(unique_codes):
+        print(f"       {code}")
+```
+
+**Expected output** (remote control with 11 repeated transmissions):
+
+```
+=== ASK/OOK Signal Analysis ===
+  Modulation  : ASK
+  Bit length  : 300 samples
+  Center      : 0.0080
+  Noise floor : 0.001200
+
+=== 11 Message(s) ===
+  [1] b25b6db6c80  (44 bits, pause=29000)
+  [2] b25b6db6c80  (44 bits, pause=29000)
+  ...
+
+=== Unique codes: 1 ===
+  b25b6db6c80  (transmitted 11x)
+
+=== Protocol Structure ===
+  preamble          bits[  0: 16]  16 bits (2 bytes)
+  device_id         bits[ 16: 36]  20 bits (3 bytes)
+  command           bits[ 36: 44]   8 bits (1 byte)
+
+=== Detector Implementation Notes ===
+  1. Demodulate as ASK with threshold 0.0080
+  2. Symbol rate: 1 symbol = 300 samples
+  3. Match against 1 known code(s):
+       b25b6db6c80
+```
+
+---
+
+### Example 8 – X-Midas PSK to Protocol Specification
+
+Phase-shift keying (PSK) is used in protocols like IEEE 802.15.4 (ZigBee)
+and some satellite links.  Here is the workflow for a PSK signal captured
+in X-Midas BLUE format.
+
+```python
+from urh.ainterpretation.AgenticAnalysis import analyze_signal
+
+# ── Analyze a PSK signal from X-Midas BLUE ──────────────────────
+result = analyze_signal("satellite_psk_capture.blu")
+
+params = result["signal_parameters"]
+print("=== PSK Signal Analysis ===")
+print(f"  Modulation      : {params['modulation_type']}")   # PSK
+print(f"  Samples/symbol  : {params['bit_length']}")
+print(f"  Center (phase)  : {params['center']:.6f}")
+print(f"  Noise floor     : {params['noise']:.6f}")
+print(f"  Timing tolerance: {params['tolerance']}")
+
+# ── Decoded messages ─────────────────────────────────────────────
+print(f"\n=== Decoded Messages ({result['num_messages']}) ===\n")
+for i, msg in enumerate(result["messages"]):
+    hex_str = msg["hex"]
+    bit_len = len(msg["bits"])
+    byte_len = (bit_len + 7) // 8
+    print(f"  Message {i+1}  [{byte_len} bytes, {bit_len} bits]")
+    # Print hex in groups of 4 for readability
+    hex_groups = " ".join(
+        hex_str[j:j+4] for j in range(0, len(hex_str), 4)
+    )
+    print(f"    Hex : {hex_groups}")
+    print(f"    Bits: {msg['bits'][:64]}{'…' if bit_len > 64 else ''}")
+    print()
+
+# ── Protocol field inference ─────────────────────────────────────
+if result["protocol_fields"]:
+    print("=== Inferred Frame Structure ===\n")
+    print(f"  {'Field':<20s} │ {'Bit Range':<12s} │ {'Width':>5s} │ Notes")
+    print(f"  {'─'*20}─┼─{'─'*12}─┼─{'─'*5}─┼─{'─'*20}")
+    for f in result["protocol_fields"]:
+        w = f["end"] - f["start"]
+        notes = ""
+        if "preamble" in f["name"].lower():
+            notes = "Clock recovery"
+        elif "sync" in f["name"].lower():
+            notes = "Frame delimiter"
+        elif "length" in f["name"].lower():
+            notes = "Payload size"
+        elif "address" in f["name"].lower():
+            notes = "Device ID"
+        elif "sequence" in f["name"].lower():
+            notes = "Packet counter"
+        elif "checksum" in f["name"].lower() or "crc" in f["name"].lower():
+            notes = "Integrity check"
+        print(f"  {f['name']:<20s} │ [{f['start']:3d}:{f['end']:3d}]    "
+              f"│ {w:>5d} │ {notes}")
+
+    # ── Protocol specification summary ───────────────────────────
+    total_bits = max(f["end"] for f in result["protocol_fields"])
+    print(f"\n  Total frame length: {total_bits} bits "
+          f"({(total_bits + 7) // 8} bytes)")
+    print(f"  Modulation: {params['modulation_type']}")
+    print(f"  Symbol rate: {params['bit_length']} samples/symbol")
+```
+
+**Expected output** (PSK example):
+
+```
+=== PSK Signal Analysis ===
+  Modulation      : PSK
+  Samples/symbol  : 200
+  Center (phase)  : 0.023000
+  Noise floor     : 0.004500
+  Timing tolerance: 6
+
+=== Decoded Messages (3) ===
+
+  Message 1  [22 bytes, 176 bits]
+    Hex : aaaa aaaa 5512 3401 0809 1a2b 3c4d 0012 abcd ef01 2345
+    Bits: 10101010101010101010101010101010010101010001001000110100…
+
+  Message 2  [22 bytes, 176 bits]
+    Hex : aaaa aaaa 5512 3402 0809 1a2b 3c4d 0013 abcd ef01 2347
+    Bits: 10101010101010101010101010101010010101010001001000110100…
+
+  Message 3  [22 bytes, 176 bits]
+    Hex : aaaa aaaa 5512 3403 0809 1a2b 3c4d 0014 abcd ef01 2349
+    Bits: 10101010101010101010101010101010010101010001001000110100…
+
+=== Inferred Frame Structure ===
+
+  Field                │ Bit Range    │ Width │ Notes
+  ─────────────────────┼──────────────┼───────┼─────────────────────
+  preamble             │ [  0: 32]    │    32 │ Clock recovery
+  sync                 │ [ 32: 48]    │    16 │ Frame delimiter
+  length               │ [ 48: 56]    │     8 │ Payload size
+  address              │ [ 56: 88]    │    32 │ Device ID
+  sequence number      │ [ 88: 96]    │     8 │ Packet counter
+  data                 │ [ 96:160]    │    64 │
+  checksum             │ [160:176]    │    16 │ Integrity check
+
+  Total frame length: 176 bits (22 bytes)
+  Modulation: PSK
+  Symbol rate: 200 samples/symbol
+```
+
+---
+
+### Example 9 – Multi-Message Protocol with Field Inference
 
 When a recording contains multiple messages, URH's AWRE engine can
 automatically infer protocol field boundaries such as preamble, sync word,
@@ -341,7 +644,7 @@ Message 2:
 
 ---
 
-### Example 7 – Building a Protocol Specification Document
+### Example 10 – Building a Protocol Specification Document
 
 This example shows a complete workflow: analyze a signal, then generate a
 human-readable protocol specification that could be saved to a file or used
