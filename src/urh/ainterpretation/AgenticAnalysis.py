@@ -16,9 +16,60 @@ import numpy as np
 from urh.ainterpretation import AutoInterpretation
 from urh.awre.FormatFinder import FormatFinder
 from urh.signalprocessing.IQArray import IQArray
-from urh.signalprocessing.Message import Message
 from urh.signalprocessing.ProtocolAnalyzer import ProtocolAnalyzer
 from urh.signalprocessing.Signal import Signal
+
+
+def _empty_result() -> dict:
+    return {
+        "signal_parameters": None,
+        "messages": [],
+        "protocol_fields": [],
+        "num_messages": 0,
+    }
+
+
+def _build_result(estimated, protocol_analyzer) -> dict:
+    messages_out = [
+        {
+            "bits": msg.decoded_bits_str,
+            "hex": msg.decoded_hex_str,
+            "ascii": msg.decoded_ascii_str,
+            "pause": msg.pause,
+        }
+        for msg in protocol_analyzer.messages
+    ]
+
+    protocol_fields = []
+    if len(protocol_analyzer.messages) >= 2:
+        format_finder = FormatFinder(protocol_analyzer.messages)
+        format_finder.run()
+
+        for msg_type in format_finder.message_types:
+            for label in msg_type:
+                protocol_fields.append(
+                    {
+                        "name": label.name,
+                        "start": label.start,
+                        "end": label.end,
+                        "message_type": msg_type.name,
+                    }
+                )
+
+    return {
+        "signal_parameters": estimated,
+        "messages": messages_out,
+        "protocol_fields": protocol_fields,
+        "num_messages": len(messages_out),
+    }
+
+
+def _apply_estimated_params(signal, estimated):
+    signal.noise_threshold = estimated["noise"]
+    signal.modulation_type = estimated["modulation_type"]
+    signal.center = estimated["center"]
+    signal.tolerance = estimated["tolerance"]
+    signal.samples_per_symbol = estimated["bit_length"]
 
 
 def analyze_signal(
@@ -45,60 +96,16 @@ def analyze_signal(
     """
     signal = Signal(signal_path, "", sample_rate=sample_rate)
 
-    # --- Step 1: Auto-detect signal parameters ---------------------------
     estimated = AutoInterpretation.estimate(signal.iq_array)
     if estimated is None:
-        return {
-            "signal_parameters": None,
-            "messages": [],
-            "protocol_fields": [],
-            "num_messages": 0,
-        }
+        return _empty_result()
 
-    signal.noise_threshold = estimated["noise"]
-    signal.modulation_type = estimated["modulation_type"]
-    signal.center = estimated["center"]
-    signal.tolerance = estimated["tolerance"]
-    signal.samples_per_symbol = estimated["bit_length"]
+    _apply_estimated_params(signal, estimated)
 
-    # --- Step 2: Demodulate and extract protocol messages -----------------
     protocol_analyzer = ProtocolAnalyzer(signal)
     protocol_analyzer.get_protocol_from_signal()
 
-    messages_out = []
-    for msg in protocol_analyzer.messages:
-        messages_out.append(
-            {
-                "bits": msg.decoded_bits_str,
-                "hex": msg.decoded_hex_str,
-                "ascii": msg.decoded_ascii_str,
-                "pause": msg.pause,
-            }
-        )
-
-    # --- Step 3: Auto-infer protocol fields (AWRE) -----------------------
-    protocol_fields = []
-    if len(protocol_analyzer.messages) >= 2:
-        format_finder = FormatFinder(protocol_analyzer.messages)
-        format_finder.run()
-
-        for msg_type in format_finder.message_types:
-            for label in msg_type:
-                protocol_fields.append(
-                    {
-                        "name": label.name,
-                        "start": label.start,
-                        "end": label.end,
-                        "message_type": msg_type.name,
-                    }
-                )
-
-    return {
-        "signal_parameters": estimated,
-        "messages": messages_out,
-        "protocol_fields": protocol_fields,
-        "num_messages": len(messages_out),
-    }
+    return _build_result(estimated, protocol_analyzer)
 
 
 def analyze_iq_array(
@@ -125,12 +132,7 @@ def analyze_iq_array(
     """
     estimated = AutoInterpretation.estimate(iq_array, noise=noise, modulation=modulation)
     if estimated is None:
-        return {
-            "signal_parameters": None,
-            "messages": [],
-            "protocol_fields": [],
-            "num_messages": 0,
-        }
+        return _empty_result()
 
     signal = Signal("", "")
     if isinstance(iq_array, IQArray):
@@ -141,45 +143,9 @@ def analyze_iq_array(
         else:
             signal.iq_array = IQArray(iq_array)
 
-    signal.noise_threshold = estimated["noise"]
-    signal.modulation_type = estimated["modulation_type"]
-    signal.center = estimated["center"]
-    signal.tolerance = estimated["tolerance"]
-    signal.samples_per_symbol = estimated["bit_length"]
+    _apply_estimated_params(signal, estimated)
 
     protocol_analyzer = ProtocolAnalyzer(signal)
     protocol_analyzer.get_protocol_from_signal()
 
-    messages_out = []
-    for msg in protocol_analyzer.messages:
-        messages_out.append(
-            {
-                "bits": msg.decoded_bits_str,
-                "hex": msg.decoded_hex_str,
-                "ascii": msg.decoded_ascii_str,
-                "pause": msg.pause,
-            }
-        )
-
-    protocol_fields = []
-    if len(protocol_analyzer.messages) >= 2:
-        format_finder = FormatFinder(protocol_analyzer.messages)
-        format_finder.run()
-
-        for msg_type in format_finder.message_types:
-            for label in msg_type:
-                protocol_fields.append(
-                    {
-                        "name": label.name,
-                        "start": label.start,
-                        "end": label.end,
-                        "message_type": msg_type.name,
-                    }
-                )
-
-    return {
-        "signal_parameters": estimated,
-        "messages": messages_out,
-        "protocol_fields": protocol_fields,
-        "num_messages": len(messages_out),
-    }
+    return _build_result(estimated, protocol_analyzer)
