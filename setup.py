@@ -175,6 +175,7 @@ setup(
         "console_scripts": [
             "urh = urh.main:main",
             "urh_cli = urh.cli.urh_cli:main",
+            "urh_mcp = urh.mcp_server:main",
         ]
     },
 )
