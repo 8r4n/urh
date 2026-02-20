@@ -27,7 +27,15 @@ IQ capture to documented protocol specification can be scripted without the GUI.
    - [Example 10 – Building a Protocol Specification Document](#example-10--building-a-protocol-specification-document)
 6. [Pipeline Architecture](#pipeline-architecture)
 7. [Result Dictionary Reference](#result-dictionary-reference)
-8. [Troubleshooting](#troubleshooting)
+8. [MCP Server](#mcp-server)
+   - [What is MCP?](#what-is-mcp)
+   - [Installation](#mcp-installation)
+   - [Starting the Server](#starting-the-server)
+   - [MCP Tools Reference](#mcp-tools-reference)
+   - [Client Configuration](#client-configuration)
+   - [MCP Architecture](#mcp-architecture)
+   - [MCP Examples](#mcp-examples)
+9. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -847,6 +855,355 @@ If no signal is detected (e.g. the input is pure noise), the result is:
     "num_messages": 0,
 }
 ```
+
+---
+
+## MCP Server
+
+The URH MCP server exposes the agentic signal analysis pipeline through the
+[Model Context Protocol](https://modelcontextprotocol.io/), allowing LLM-based
+applications (Claude, ChatGPT, Copilot, etc.) to analyze radio signals by
+calling URH tools directly.
+
+### What is MCP?
+
+The Model Context Protocol (MCP) is an open standard for connecting AI
+assistants to external data sources and tools.  Instead of copying data into
+prompts, an MCP client (the AI application) sends structured tool-call requests
+to an MCP server (URH), which executes the operation and returns structured
+results.
+
+In URH's case, this means an AI assistant can:
+
+1. Scan a directory for signal files
+2. Analyze a signal file to detect modulation and decode messages
+3. Feed raw IQ samples for analysis
+4. Query which file formats are supported
+
+All without the user needing to write Python code — the AI calls the tools on
+the user's behalf.
+
+### MCP Installation
+
+```bash
+# Install URH with MCP support
+pip install urh
+pip install mcp
+```
+
+The MCP server is included in the URH package.  The `mcp` package is the only
+additional dependency (it is not required for normal URH usage).
+
+### Starting the Server
+
+The server uses **stdio transport** by default, which is the standard for
+local IDE and agent integrations:
+
+```bash
+# Using the console script entry point
+urh_mcp
+
+# Or run the module directly
+python -m urh.mcp_server
+```
+
+The server starts, registers its tools, and waits for JSON-RPC requests on
+stdin.  It is designed to be launched by an MCP client, not run interactively.
+
+### MCP Tools Reference
+
+The server exposes four tools:
+
+#### `analyze_signal_file`
+
+Analyzes a radio signal file on disk.  This is the primary tool — it runs
+the full pipeline (parameter detection → demodulation → protocol inference).
+
+| Parameter     | Type    | Default | Description |
+|---------------|---------|---------|-------------|
+| `signal_path` | `str`   | —       | Absolute path to a signal file |
+| `sample_rate` | `float` | `1e6`   | Sample rate in Hz |
+
+**Returns:** JSON string with `signal_parameters`, `messages`,
+`protocol_fields`, and `num_messages`.
+
+**How it works internally:**
+
+1. The tool validates that the file exists
+2. Calls `AgenticAnalysis.analyze_signal(path, sample_rate)` which:
+   - Creates a `Signal` object that loads the file based on its extension
+     (dispatches to format-specific loaders for `.wav`, `.blu`, `.mat`, etc.)
+   - Calls `AutoInterpretation.estimate()` on the IQ data to detect
+     modulation type, bit length, center, noise, and tolerance
+   - Applies detected parameters to the `Signal` object
+   - Creates a `ProtocolAnalyzer` and calls `get_protocol_from_signal()`
+     to demodulate and extract individual messages
+   - If ≥2 messages are found, runs `FormatFinder` (AWRE engine) to infer
+     protocol field boundaries (preamble, sync, length, address, checksum, etc.)
+3. Serializes numpy types to JSON-safe Python types
+4. Returns the result as a formatted JSON string
+
+#### `analyze_iq_data`
+
+Analyzes raw IQ samples passed as base64-encoded binary data.
+
+| Parameter    | Type         | Default     | Description |
+|--------------|--------------|-------------|-------------|
+| `iq_base64`  | `str`        | —           | Base64-encoded raw IQ samples |
+| `dtype`      | `str`        | `"float32"` | NumPy dtype: `float32`, `complex64`, `int16`, `int8` |
+| `noise`      | `float\|None`| `None`      | Known noise threshold (auto-detected if omitted) |
+| `modulation` | `str\|None`  | `None`      | Known modulation: `"ASK"`, `"FSK"`, `"PSK"` |
+
+**Returns:** JSON string with the same structure as `analyze_signal_file`.
+
+**How it works internally:**
+
+1. Decodes the base64 string to raw bytes
+2. Converts to a numpy array with the specified dtype, creating a writable copy
+3. If dtype is `complex64`, converts to interleaved `float32` view
+4. Calls `AgenticAnalysis.analyze_iq_array()` which runs the same pipeline
+   as `analyze_signal` but on in-memory data
+5. Returns serialized JSON result
+
+#### `list_supported_formats`
+
+Returns all signal file formats URH can load.
+
+**Parameters:** None
+
+**Returns:** JSON object mapping file extensions (e.g. `".complex"`, `".blu"`)
+to human-readable format descriptions.
+
+#### `list_signal_files`
+
+Scans a directory for signal files that URH can analyze.
+
+| Parameter   | Type  | Description |
+|-------------|-------|-------------|
+| `directory` | `str` | Absolute path to directory |
+
+**Returns:** JSON object with `directory`, `files` (list of file objects with
+`path`, `name`, `size_bytes`, `format`), and `count`.
+
+### Client Configuration
+
+#### Claude Desktop
+
+Add to `claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "urh": {
+      "command": "urh_mcp",
+      "args": []
+    }
+  }
+}
+```
+
+#### VS Code / Copilot
+
+Add to your VS Code `settings.json`:
+
+```json
+{
+  "mcp": {
+    "servers": {
+      "urh": {
+        "command": "urh_mcp",
+        "args": []
+      }
+    }
+  }
+}
+```
+
+#### Generic MCP Client (Python)
+
+```python
+import asyncio
+from mcp import ClientSession, StdioServerParameters
+from mcp.client.stdio import stdio_client
+
+async def main():
+    server_params = StdioServerParameters(command="urh_mcp")
+    async with stdio_client(server_params) as (read, write):
+        async with ClientSession(read, write) as session:
+            await session.initialize()
+
+            # List available tools
+            tools = await session.list_tools()
+            for tool in tools.tools:
+                print(f"  {tool.name}: {tool.description[:60]}...")
+
+            # Analyze a signal file
+            result = await session.call_tool(
+                "analyze_signal_file",
+                arguments={"signal_path": "/path/to/capture.complex"}
+            )
+            print(result.content[0].text)
+
+asyncio.run(main())
+```
+
+### MCP Architecture
+
+The MCP server acts as a thin adapter between the MCP protocol and URH's
+analysis library.  Here is how a tool call flows through the system:
+
+```
+┌─────────────┐     stdio      ┌─────────────────┐
+│  MCP Client │◄──────────────►│  URH MCP Server  │
+│  (LLM app)  │   JSON-RPC     │  (FastMCP)       │
+└─────────────┘                 └────────┬────────┘
+                                         │
+                     ┌───────────────────┼───────────────────┐
+                     │                   │                   │
+               ┌─────▼──────┐   ┌───────▼────────┐  ┌───────▼───────┐
+               │ analyze_   │   │ analyze_       │  │ list_         │
+               │ signal_file│   │ iq_data        │  │ signal_files  │
+               └─────┬──────┘   └───────┬────────┘  └───────────────┘
+                     │                   │
+                     ▼                   ▼
+              ┌──────────────────────────────────┐
+              │  AgenticAnalysis module           │
+              │  (analyze_signal / analyze_iq_   │
+              │   array)                          │
+              └──────────────┬───────────────────┘
+                             │
+              ┌──────────────┼──────────────┐
+              │              │              │
+        ┌─────▼─────┐ ┌─────▼──────┐ ┌─────▼──────┐
+        │  Auto      │ │ Protocol   │ │ Format     │
+        │ Interpret. │ │ Analyzer   │ │ Finder     │
+        │ estimate() │ │ get_proto  │ │ (AWRE)     │
+        │            │ │ col_from_  │ │ run()      │
+        │ Detects:   │ │ signal()   │ │            │
+        │ •modulation│ │            │ │ Infers:    │
+        │ •bit_length│ │ Extracts:  │ │ •preamble  │
+        │ •center    │ │ •bits      │ │ •sync      │
+        │ •noise     │ │ •hex       │ │ •length    │
+        │ •tolerance │ │ •ascii     │ │ •address   │
+        └────────────┘ │ •pause     │ │ •checksum  │
+                       └────────────┘ └────────────┘
+```
+
+**Key design decisions:**
+
+- **stdio transport**: The server uses stdin/stdout for communication, which
+  is the standard for local MCP integrations.  This avoids the need for
+  network configuration or authentication.
+- **JSON serialization**: All numpy types (int64, float64, etc.) are converted
+  to native Python types before JSON encoding, preventing serialization errors.
+- **Stateless tools**: Each tool call is independent — no session state is
+  maintained between calls.  This matches the stateless nature of the
+  underlying analysis pipeline.
+- **Error handling**: Invalid inputs (missing files, bad base64, unsupported
+  dtypes) return JSON error objects rather than raising exceptions, so the
+  LLM client always receives a parseable response.
+
+### MCP Examples
+
+#### Example A – AI-Assisted Signal Analysis
+
+A user asks their AI assistant to analyze a signal file:
+
+> **User:** "Analyze the signal file at /home/user/captures/doorbell.complex
+> and tell me what protocol it uses."
+
+The AI calls the `analyze_signal_file` tool:
+
+```json
+{
+  "tool": "analyze_signal_file",
+  "arguments": {
+    "signal_path": "/home/user/captures/doorbell.complex"
+  }
+}
+```
+
+The MCP server returns:
+
+```json
+{
+  "signal_parameters": {
+    "modulation_type": "ASK",
+    "bit_length": 300,
+    "center": 0.008,
+    "noise": 0.0012,
+    "tolerance": 5
+  },
+  "messages": [
+    {"hex": "b25b6db6c80", "bits": "10110010...", "ascii": "...", "pause": 29000},
+    {"hex": "b25b6db6c80", "bits": "10110010...", "ascii": "...", "pause": 29000}
+  ],
+  "protocol_fields": [
+    {"name": "preamble", "start": 0, "end": 8, "message_type": "Default"},
+    {"name": "data", "start": 8, "end": 36, "message_type": "Default"}
+  ],
+  "num_messages": 2
+}
+```
+
+The AI can then interpret the result: "The doorbell uses ASK modulation with
+a 300-sample bit length.  I found 2 identical messages (the code `b25b6db6c80`
+is transmitted twice).  The protocol has an 8-bit preamble followed by a
+28-bit data field."
+
+#### Example B – Scanning a Directory
+
+> **User:** "What signal files do I have in my captures folder?"
+
+```json
+{
+  "tool": "list_signal_files",
+  "arguments": {
+    "directory": "/home/user/captures"
+  }
+}
+```
+
+Response:
+
+```json
+{
+  "directory": "/home/user/captures",
+  "files": [
+    {"path": "/home/user/captures/doorbell.complex", "name": "doorbell.complex",
+     "size_bytes": 524288, "format": "Raw float32 IQ pairs (URH native)"},
+    {"path": "/home/user/captures/sensor.blu", "name": "sensor.blu",
+     "size_bytes": 1048576, "format": "X-Midas BLUE (512-byte header)"}
+  ],
+  "count": 2
+}
+```
+
+#### Example C – Analyzing In-Memory Data
+
+When the AI has IQ samples from another source (e.g., an SDR API), it can
+send them as base64:
+
+```python
+import base64, numpy as np
+
+# Capture or generate IQ samples
+iq = np.array([0.1, 0.2, -0.1, 0.3, ...], dtype=np.float32)
+b64 = base64.b64encode(iq.tobytes()).decode()
+```
+
+```json
+{
+  "tool": "analyze_iq_data",
+  "arguments": {
+    "iq_base64": "zczMPc3MzD3NzEy+zcxMPg==...",
+    "dtype": "float32",
+    "modulation": "FSK"
+  }
+}
+```
+
+The response has the same structure as `analyze_signal_file`.
 
 ---
 
