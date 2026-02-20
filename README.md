@@ -21,6 +21,7 @@ In order to get started
  - watch the [demonstration videos (YouTube)](https://www.youtube.com/watch?v=kuubkTDAxwA&index=1&list=PLlKjreY6G-1EKKBs9sucMdk8PwzcFuIPB),
  - check out the [wiki](https://github.com/jopohl/urh/wiki) for more information such as supported devices or
  - read some [articles about URH](#Articles) for inspiration.
+ - read the [Agentic Signal Analysis guide](docs/agentic-signal-analysis.md) for automated, headless signal analysis with end-to-end examples.
 
 If you like URH, please :star: this repository and [join our Slack channel](https://join.slack.com/t/stralsundsecurity/shared_invite/enQtMjEwOTIxNzMzODc3LTk3NmE4MGVjYjEyYTMzYTdmN2RlNzUzYzg0NTNjNTQ2ODBkMzI3MDZlOWY3MjE4YjBkNTM4ZjJlNTJlZmJhNDg). We appreciate your support!
 
