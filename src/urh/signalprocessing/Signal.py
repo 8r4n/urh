@@ -1,6 +1,7 @@
 import math
 import os
 import re
+import struct
 import tarfile
 import wave
 
@@ -89,6 +90,8 @@ class Signal(QObject):
                 self.__load_sub_file(filename)
             elif filename.endswith(".coco"):
                 self.__load_compressed_complex(filename)
+            elif filename.endswith(".blu") or filename.endswith(".blue"):
+                self.__load_xmidas_file(filename)
             else:
                 self.__load_complex_file(filename)
 
@@ -211,6 +214,97 @@ class Signal(QObject):
         extracted_filename = os.path.join(QDir.tempPath(), obj.getnames()[0])
         self.__load_complex_file(extracted_filename)
         os.remove(extracted_filename)
+
+    def __load_xmidas_file(self, filename: str):
+        """Load an X-Midas BLUE file.
+
+        The BLUE format uses a 512-byte header containing metadata such as
+        data format, byte order, data offset, and sample rate (via *xdelta*).
+        """
+
+        # Map of BLUE format code → (numpy dtype, is_complex, atoms_per_element)
+        _BLUE_FORMATS = {
+            "SF": (np.float32, False, 1),
+            "CF": (np.float32, True, 2),
+            "SD": (np.float64, False, 1),
+            "CD": (np.float64, True, 2),
+            "SI": (np.int16, False, 1),
+            "CI": (np.int16, True, 2),
+            "SB": (np.int8, False, 1),
+            "CB": (np.int8, True, 2),
+            "SL": (np.int32, False, 1),
+            "CL": (np.int32, True, 2),
+        }
+
+        with open(filename, "rb") as f:
+            header = f.read(512)
+
+        if len(header) < 512:
+            raise ValueError("File too small to be an X-Midas BLUE file")
+
+        # Determine header byte order from head_rep at offset 4
+        head_rep = header[4:8]
+        if head_rep[:1] == b"E":
+            hdr_endian = ">"
+        else:
+            hdr_endian = "<"
+
+        # Determine data byte order from data_rep at offset 8
+        data_rep = header[8:12]
+        if data_rep[:1] == b"E":
+            data_endian = ">"
+        else:
+            data_endian = "<"
+
+        # Parse key header fields using header endianness
+        data_start = struct.unpack(hdr_endian + "d", header[32:40])[0]
+        data_size = struct.unpack(hdr_endian + "d", header[40:48])[0]
+        fmt_code = header[52:54].decode("ascii", errors="replace").strip("\x00")
+
+        # Adjunct area (type 1000 vector): xstart at 256, xdelta at 264
+        xdelta = struct.unpack(hdr_endian + "d", header[264:272])[0]
+
+        if fmt_code not in _BLUE_FORMATS:
+            raise ValueError(
+                "Unsupported X-Midas BLUE format code: {!r}".format(fmt_code)
+            )
+
+        dtype, is_complex, atoms = _BLUE_FORMATS[fmt_code]
+
+        data_start_int = int(data_start)
+        data_size_int = int(data_size)
+        bytes_per_atom = np.dtype(dtype).itemsize
+
+        num_atoms = data_size_int // bytes_per_atom
+
+        with open(filename, "rb") as f:
+            f.seek(data_start_int)
+            raw = np.frombuffer(
+                f.read(data_size_int), dtype=dtype, count=num_atoms
+            ).copy()
+
+        # Swap bytes if data endianness differs from native
+        native = "<" if np.little_endian else ">"
+        if data_endian != native:
+            raw = raw.byteswap()
+
+        if is_complex:
+            # Interleaved I/Q → Nx2
+            if dtype == np.float64:
+                raw = raw.astype(np.float32)
+            self.iq_array = IQArray(raw)
+        else:
+            # Scalar / real-only data – treat as already demodulated
+            if dtype == np.float64:
+                raw = raw.astype(np.float32)
+            elif dtype not in (np.float32,):
+                raw = raw.astype(np.float32)
+            self.iq_array = IQArray(None, np.float32, n=len(raw))
+            self.iq_array.real = raw
+            self.__already_demodulated = True
+
+        if xdelta > 0:
+            self.sample_rate = 1.0 / xdelta
 
     @property
     def already_demodulated(self) -> bool:

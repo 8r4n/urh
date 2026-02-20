@@ -50,13 +50,14 @@ SIMULATOR_FILE_FILTER = "Simulator Profile (*.sim.xml *.sim)"
 TAR_FILE_FILTER = "Tar Archive (*.tar *.tar.gz *.tar.bz2)"
 ZIP_FILE_FILTER = "Zip Archive (*.zip)"
 SUB_FILE_FILTER = "Flipper Zero SubGHz RAW (*.sub)"
+XMIDAS_FILE_FILTER = "X-Midas BLUE (*.blu *.blue)"
 
 
 def __get__name_filter_for_signals() -> str:
     return ";;".join(
         [EVERYTHING_FILE_FILTER]
         + SIGNAL_NAME_FILTERS
-        + [COMPRESSED_COMPLEX_FILE_FILTER, WAV_FILE_FILTER, SUB_FILE_FILTER]
+        + [COMPRESSED_COMPLEX_FILE_FILTER, WAV_FILE_FILTER, SUB_FILE_FILTER, XMIDAS_FILE_FILTER]
     )
 
 
