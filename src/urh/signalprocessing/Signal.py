@@ -259,7 +259,12 @@ class Signal(QObject):
         # Parse key header fields using header endianness
         data_start = struct.unpack(hdr_endian + "d", header[32:40])[0]
         data_size = struct.unpack(hdr_endian + "d", header[40:48])[0]
-        fmt_code = header[52:54].decode("ascii", errors="replace").strip("\x00")
+        try:
+            fmt_code = header[52:54].decode("ascii").strip("\x00")
+        except UnicodeDecodeError:
+            raise ValueError(
+                "Corrupted X-Midas BLUE header: invalid format code bytes"
+            )
 
         # Adjunct area (type 1000 vector): xstart at 256, xdelta at 264
         xdelta = struct.unpack(hdr_endian + "d", header[264:272])[0]
@@ -288,17 +293,13 @@ class Signal(QObject):
         if data_endian != native:
             raw = raw.byteswap()
 
+        if raw.dtype != np.float32:
+            raw = raw.astype(np.float32)
+
         if is_complex:
-            # Interleaved I/Q → Nx2
-            if dtype == np.float64:
-                raw = raw.astype(np.float32)
             self.iq_array = IQArray(raw)
         else:
             # Scalar / real-only data – treat as already demodulated
-            if dtype == np.float64:
-                raw = raw.astype(np.float32)
-            elif dtype not in (np.float32,):
-                raw = raw.astype(np.float32)
             self.iq_array = IQArray(None, np.float32, n=len(raw))
             self.iq_array.real = raw
             self.__already_demodulated = True
