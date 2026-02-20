@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "urh": {
+      "command": "urh_mcp",
+      "args": [],
+      "env": {}
+    }
+  }
+}

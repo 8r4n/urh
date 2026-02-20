@@ -1019,6 +1019,55 @@ Add to your VS Code `settings.json`:
 }
 ```
 
+#### OpenClaw
+
+Add to your `openclaw.json` (typically `~/.openclaw/openclaw.json`):
+
+```json
+{
+  "mcpServers": {
+    "urh": {
+      "command": "urh_mcp",
+      "args": [],
+      "env": {}
+    }
+  }
+}
+```
+
+Alternatively, if using the MCP adapter plugin:
+
+```json
+{
+  "plugins": {
+    "entries": {
+      "mcp-adapter": {
+        "enabled": true,
+        "config": {
+          "servers": [
+            {
+              "name": "urh",
+              "transport": "stdio",
+              "command": "urh_mcp",
+              "args": [],
+              "env": {}
+            }
+          ]
+        }
+      }
+    }
+  }
+}
+```
+
+After updating, restart the gateway:
+
+```bash
+openclaw gateway restart
+```
+
+A ready-to-use `openclaw.json` is included in the repository root.
+
 #### Generic MCP Client (Python)
 
 ```python
