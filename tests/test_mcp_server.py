@@ -73,6 +73,15 @@ class TestMCPServerTools(unittest.TestCase):
 
         self.assertIn("error", result)
 
+    def test_analyze_iq_data_empty(self):
+        """analyze_iq_data returns error for empty IQ data."""
+        b64 = base64.b64encode(b"").decode()
+        result_json = analyze_iq_data(b64, dtype="float32")
+        result = json.loads(result_json)
+
+        self.assertIn("error", result)
+        self.assertIn("empty", result["error"].lower())
+
     def test_analyze_iq_data_unsupported_dtype(self):
         """analyze_iq_data returns error for unsupported dtype."""
         b64 = base64.b64encode(b"\x00" * 16).decode()

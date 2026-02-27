@@ -168,6 +168,26 @@ class TestXmidasSupport(unittest.TestCase):
         finally:
             os.unlink(fname)
 
+    def test_negative_data_size_raises(self):
+        """A header with negative data_size should raise ValueError."""
+        header = bytearray(512)
+        header[0:4] = b"BLUE"
+        header[4:8] = b"ILLI"
+        header[8:12] = b"ILLI"
+        struct.pack_into("<d", header, 32, 512.0)  # data_start
+        struct.pack_into("<d", header, 40, -1.0)   # negative data_size
+        header[52:54] = b"CF"
+        struct.pack_into("<d", header, 264, 1e-6)
+
+        with tempfile.NamedTemporaryFile(suffix=".blu", delete=False) as f:
+            fname = f.name
+            f.write(header)
+        try:
+            with self.assertRaises(ValueError):
+                Signal(fname, "")
+        finally:
+            os.unlink(fname)
+
     def test_agentic_analysis_with_xmidas(self):
         """AgenticAnalysis.analyze_signal works on xmidas BLUE files."""
         from urh.ainterpretation.AgenticAnalysis import analyze_signal

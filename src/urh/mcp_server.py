@@ -53,18 +53,22 @@ SUPPORTED_FORMATS = {
 }
 
 
+def _convert_numpy(value):
+    """Convert numpy scalars to native Python types for JSON serialization."""
+    if isinstance(value, np.integer):
+        return int(value)
+    if isinstance(value, np.floating):
+        return float(value)
+    if isinstance(value, dict):
+        return {k: _convert_numpy(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_convert_numpy(v) for v in value]
+    return value
+
+
 def _serialize_result(result: dict) -> dict:
     """Ensure all values in the analysis result are JSON-serializable."""
-    serialized = dict(result)
-    if serialized.get("signal_parameters"):
-        params = dict(serialized["signal_parameters"])
-        for key, value in params.items():
-            if isinstance(value, (np.integer,)):
-                params[key] = int(value)
-            elif isinstance(value, (np.floating,)):
-                params[key] = float(value)
-        serialized["signal_parameters"] = params
-    return serialized
+    return _convert_numpy(result)
 
 
 @mcp.tool()
@@ -141,6 +145,9 @@ def analyze_iq_data(
         iq_array = np.frombuffer(raw_bytes, dtype=dtype_map[dtype]).copy()
     except Exception as e:
         return json.dumps({"error": f"Failed to parse IQ data: {e}"})
+
+    if iq_array.size == 0:
+        return json.dumps({"error": "IQ data is empty"})
 
     if iq_array.dtype == np.complex64:
         iq_array = iq_array.view(np.float32)

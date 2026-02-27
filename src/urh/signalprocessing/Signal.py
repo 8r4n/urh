@@ -278,6 +278,11 @@ class Signal(QObject):
 
         dtype, is_complex, atoms = _BLUE_FORMATS[fmt_code]
 
+        if data_start < 0 or data_size < 0:
+            raise ValueError(
+                "Invalid X-Midas BLUE header: negative data_start or data_size"
+            )
+
         data_start_int = int(data_start)
         data_size_int = int(data_size)
         bytes_per_atom = np.dtype(dtype).itemsize
